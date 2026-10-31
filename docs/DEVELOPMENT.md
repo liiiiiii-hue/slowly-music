@@ -24,7 +24,7 @@ Windows 使用 `gradlew.bat`。首次构建需要网络下载 Gradle 与 Maven �
 - `gradle/`：Wrapper。
 - `docs/`：使用、开发和隐私文档。
 
-`MainActivity` 组合应用状态和 ExoPlayer；`LibraryScreens` 管理库及歌单界面；`PlayerScreens` 共享封面/歌词与控制组件；`QqMusicScreen` 读取 QQ MediaSession，通过 `QqBridge` 发送标准控制；`ArtworkTools` 预计算模糊背景，`ArtworkRevision` 按封面内容识别更新。
+`PlaybackEngine` 使用应用上下文持有单一 ExoPlayer 和完整队列，Media3 自动切换下一首；`PlaybackService` 提供 mediaPlayback 前台服务、平台 MediaSession、通知及锁屏控制，媒体与网络唤醒锁由 Media3 管理。`MainActivity` 只订阅播放状态，不在销毁时释放播放器；`LibraryScreens` 管理库及歌单界面；`PlayerScreens` 共享封面/歌词与控制组件；`QqMusicScreen` 读取 QQ MediaSession，通过 `QqBridge` 发送标准控制；`ArtworkTools` 预计算模糊背景，`ArtworkRevision` 按封面内容识别更新。
 
 WebDAV 使用 OkHttp；音频使用 Media3 ExoPlayer 及 SimpleCache，LRU上限5GiB。`ConnectionStore` 使用 Android Keystore/AES-GCM 保存连接凭证。
 

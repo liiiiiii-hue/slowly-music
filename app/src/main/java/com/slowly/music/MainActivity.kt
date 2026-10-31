@@ -52,20 +52,22 @@ class MainActivity:ComponentActivity(){
         var playMode by remember{mutableIntStateOf(preferences.getInt("playMode",0).coerceIn(0,2))}
         var address by remember{mutableStateOf(saved?.address?:initialAccount.substringBefore('|').takeIf{it.startsWith("https://")}?:"https://dav.jianguoyun.com/dav/")}
         var user by remember{mutableStateOf(saved?.user?:initialAccount.substringAfter('|',""))};var password by remember{mutableStateOf(saved?.password?:"")};var rememberConnection by remember{mutableStateOf(true)}
-        var dav by remember{mutableStateOf(saved?.let{Dav(it.address,it.user,it.password)})}
+        var dav by remember{mutableStateOf(saved?.let{Dav(it.address,it.user,it.password)}?:PlaybackEngine.connection)}
         var chooseMusic by remember{mutableStateOf(false)};var folder by remember{mutableStateOf("")};var files by remember{mutableStateOf(emptyList<RemoteFile>())}
         val initialRoot=initialAccount.substringBefore('|').trimEnd('/')+"/"
         var lyricFolder by remember{mutableStateOf(store.folder(initialRoot))};var lyricFiles by remember{mutableStateOf(store.index(initialRoot))}
         var candidates by remember{mutableStateOf(emptyList<RemoteFile>())};var matchingTarget by remember{mutableStateOf<RemoteFile?>(null)};var rawPreview by remember{mutableStateOf<String?>(null)}
-        var song by remember{mutableStateOf<RemoteFile?>(null)};var pendingSong by remember{mutableStateOf<RemoteFile?>(null)};var queue by remember{mutableStateOf(emptyList<RemoteFile>())}
-        var lines by remember{mutableStateOf(emptyList<Line>())};var player by remember{mutableStateOf<ExoPlayer?>(null)};var loadJob by remember{mutableStateOf<Job?>(null)}
+        var song by remember{mutableStateOf<RemoteFile?>(PlaybackEngine.current)};var pendingSong by remember{mutableStateOf<RemoteFile?>(null)};var queue by remember{mutableStateOf(PlaybackEngine.queue)}
+        var lines by remember{mutableStateOf(emptyList<Line>())};var player by remember{mutableStateOf<ExoPlayer?>(PlaybackEngine.player)};var loadJob by remember{mutableStateOf<Job?>(null)}
         val clock=remember{PlaybackClock()};var probe by remember{mutableStateOf<PlaybackProbe?>(null)};var tagGeneration by remember{mutableIntStateOf(0)};var playing by remember{mutableStateOf(false)};var buffering by remember{mutableStateOf(false)}
         var playbackError by remember{mutableStateOf<String?>(null)};var artwork by remember{mutableStateOf<ImageBitmap?>(null)};var artworkBytes by remember{mutableStateOf<ByteArray?>(null)};var softArtwork by remember{mutableStateOf<ImageBitmap?>(null)};var artJob by remember{mutableStateOf<Job?>(null)}
         var artist by remember{mutableStateOf("")};var album by remember{mutableStateOf("")};var cacheBytes by remember{mutableLongStateOf(0)}
         var busy by remember{mutableStateOf(false)};var message by remember{mutableStateOf("")}
         var qqBackdrop by remember{mutableStateOf<ImageBitmap?>(null)}
         val scope=rememberCoroutineScope()
-        DisposableEffect(Unit){onDispose{loadJob?.cancel();artJob?.cancel();player?.release()}}
+        var uiListener by remember{mutableStateOf<Player.Listener?>(null)}
+        DisposableEffect(Unit){onDispose{loadJob?.cancel();artJob?.cancel();uiListener?.let{player?.removeListener(it)};probe?.let{player?.removeAnalyticsListener(it)}}}
+        LaunchedEffect(PlaybackEngine.error){playbackError=PlaybackEngine.error}
         LaunchedEffect(message){if(message.isNotEmpty()){delay(4500);message=""}}
         LaunchedEffect(player){while(isActive){player?.let{clock.position=it.currentPosition;clock.duration=it.duration.coerceAtLeast(0);probe?.sample(it)};delay(200)}}
         LaunchedEffect(Unit){while(isActive){cacheBytes=withContext(Dispatchers.IO){MusicCache.get(this@MainActivity).cacheSpace};delay(3000)}}
@@ -81,25 +83,25 @@ class MainActivity:ComponentActivity(){
             }
         }
         fun browse(path:String){scope.launch{busy=true;try{files=withContext(Dispatchers.IO){(dav?:error("请先连接网盘")).list(path)};folder=path}catch(e:CancellationException){throw e}catch(e:Exception){message=e.message?:"目录读取失败"}finally{busy=false}}}
-        fun start(file:RemoteFile){
-            val connection=dav
+        fun start(file:RemoteFile,activate:Boolean=true){
+            val connection=dav?:PlaybackEngine.connection
             if(connection==null){pendingSong=file;page="webdav";showPlayer=false;message="请连接网盘，连接后会继续播放这首歌";return}
             QqBridge.pause(this@MainActivity)
-            pendingSong=null;candidates=emptyList();matchingTarget=null;showQueue=false;showPlayer=true;song=file;artist=file.artist;album=file.album;artwork=null;artworkBytes=null;softArtwork=null;lines=emptyList();clock.position=0;clock.duration=0;buffering=true;playbackError=null
-            loadJob?.cancel();artJob?.cancel();player?.release()
-            val http=DefaultHttpDataSource.Factory().setConnectTimeoutMs(15000).setReadTimeoutMs(20000).setDefaultRequestProperties(mapOf("Authorization" to connection.authorization))
-            val active=ExoPlayer.Builder(this@MainActivity).setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(30000,120000,5000,10000).setPrioritizeTimeOverSizeThresholds(true).build()).setMediaSourceFactory(DefaultMediaSourceFactory(CacheDataSource.Factory().setCache(MusicCache.get(this@MainActivity)).setUpstreamDataSourceFactory(http).setCacheKeyFactory{spec->store.accountScope+"|"+spec.uri})).build()
+            pendingSong=null;candidates=emptyList();matchingTarget=null;showQueue=false;if(activate)showPlayer=true;song=file;artist=file.artist;album=file.album;artwork=null;artworkBytes=null;softArtwork=null;lines=emptyList();clock.position=0;clock.duration=0;buffering=true;playbackError=null
+            loadJob?.cancel();artJob?.cancel();uiListener?.let{player?.removeListener(it)};probe?.let{player?.removeAnalyticsListener(it)}
+            val active=if(activate)PlaybackEngine.select(this@MainActivity,file,queue,connection.authorization,store.accountScope,playMode)else PlaybackEngine.player?:return
+            PlaybackEngine.connection=connection
             player=active
             val stats=PlaybackProbe();probe=stats;active.addAnalyticsListener(stats)
             val cache=MusicCache.get(this@MainActivity);val cacheKey=store.accountScope+"|"+file.url
             val cachedLength=androidx.media3.datasource.cache.ContentMetadata.getContentLength(cache.getContentMetadata(cacheKey))
             android.util.Log.i("SlowlyPlayback","start fullCache=${cachedLength>0&&cache.isCached(cacheKey,0,cachedLength)} bytes=$cachedLength")
-            if(file.artwork.isNotEmpty())artJob=scope.launch{val pair=withContext(Dispatchers.Default){runCatching{ArtworkTools.decode(java.io.File(file.artwork).readBytes())}.getOrNull()};if(player===active){artwork=pair?.cover;softArtwork=pair?.background}}
-            active.addListener(object:Player.Listener{
+            if(file.artwork.isNotEmpty())artJob=scope.launch{val pair=withContext(Dispatchers.Default){runCatching{ArtworkTools.decode(java.io.File(file.artwork).readBytes())}.getOrNull()};if(player===active&&active.currentMediaItem?.mediaId==file.url){artwork=pair?.cover;softArtwork=pair?.background}}
+            val listener=object:Player.Listener{
                 override fun onIsPlayingChanged(isPlaying:Boolean){if(player===active)playing=isPlaying}
                 override fun onPlaybackStateChanged(state:Int){if(player===active)buffering=state==Player.STATE_BUFFERING}
                 override fun onMediaMetadataChanged(metadata:MediaMetadata){
-                    if(player!==active)return
+                    if(player!==active||active.currentMediaItem?.mediaId!=file.url)return
                     val currentFile=musicFiles.firstOrNull{it.url==file.url}?:file
                     artist=metadata.artist?.toString()?.takeIf{it.isNotBlank()}?:currentFile.artist
                     album=metadata.albumTitle?.toString()?.takeIf{it.isNotBlank()}?:currentFile.album
@@ -110,21 +112,16 @@ class MainActivity:ComponentActivity(){
                     artJob=scope.launch{
                         val pair=if(bytes!=null)withContext(Dispatchers.Default){ArtworkTools.decode(bytes)}else null
                         val path=if(bytes!=null)withContext(Dispatchers.IO){repository.coverPath(file.url,bytes)}else currentFile.artwork
-                        ensureActive();if(player!==active)return@launch
+                        ensureActive();if(player!==active||active.currentMediaItem?.mediaId!=file.url)return@launch
                         if(pair!=null){artwork=pair.cover;softArtwork=pair.background;artworkBytes=bytes}
                         val tagged=currentFile.copy(title=title,artist=artist,album=album,artwork=path,tagsRead=true)
                         song=tagged;musicFiles=musicFiles.map{if(it.url==file.url)tagged else it};queue=queue.map{if(it.url==file.url)tagged else it};library.saveSongs(musicFiles)
                     }
                 }
-                override fun onPlayerError(error:PlaybackException){
-                    if(player!==active)return
-                    val cause=generateSequence<Throwable>(error){it.cause}.filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()
-                    playbackError=when(cause?.responseCode){401,403->{dav=null;connectionStore.clear();"网盘授权已失效，请重新连接后播放。"};404->"云盘中找不到这首歌曲，请重新扫描音乐目录。";429->"网盘请求过于频繁，请稍后重试。";else->"歌曲加载失败，请检查网络后重试。"}
-                }
-            })
-            active.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),true)
-            active.repeatMode=if(playMode==2)Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-            active.setMediaItem(MediaItem.fromUri(file.url));active.prepare();active.play()
+            }
+            uiListener=listener;active.addListener(listener)
+            playing=active.isPlaying;buffering=active.playbackState==Player.STATE_BUFFERING
+            listener.onMediaMetadataChanged(active.mediaMetadata)
             loadJob=scope.launch{
                 try{
                     val match=matchLyrics(file.name,lyricFiles.map{java.net.URI(it.url).path},store.manual(file.url))
@@ -144,9 +141,10 @@ class MainActivity:ComponentActivity(){
             val account=root.trimEnd('/')+"|"+user.trim();val sameAccount=account==store.accountScope
             if(rememberConnection)withContext(Dispatchers.IO){connectionStore.save(SavedConnection(root,user.trim(),password))}else connectionStore.clear()
             preferences.edit().putString("account",account).apply();store.accountScope=account;dav=connection;address=root;library=LibraryStore(this@MainActivity,account);musicFiles=library.songs();playlists=library.lists();lyricFolder=store.folder(root);lyricFiles=store.index(root);page="manage";message="网盘连接成功"
-            val pending=pendingSong;pendingSong=null;if(pending!=null&&sameAccount)start(pending)else if(!sameAccount){player?.release();player=null;song=null;queue=emptyList()}
+            val pending=pendingSong;pendingSong=null;if(pending!=null&&sameAccount)start(pending)else if(!sameAccount){PlaybackEngine.release();player=null;song=null;queue=emptyList()}
         }catch(e:CancellationException){throw e}catch(e:Exception){message=e.message?:"连接失败，请检查网络或应用密码"}finally{busy=false}}}
-        LaunchedEffect(player,playMode){while(isActive){if(player?.playbackState==Player.STATE_ENDED&&playMode!=2){val i=queue.indexOfFirst{it.url==song?.url};val next=if(playMode==1)queue.filter{it.url!=song?.url}.randomOrNull()?:queue.firstOrNull()else queue.getOrNull(i+1);if(next!=null){start(next);break}};delay(200)}}
+        LaunchedEffect(PlaybackEngine.current?.url){PlaybackEngine.current?.let{if(song?.url!=it.url||uiListener==null){queue=PlaybackEngine.queue;start(it,false)}}}
+        LaunchedEffect(playMode){PlaybackEngine.mode(playMode)}
         val globalOverlay=showQueue||settings||addCurrent||matchingTarget!=null||rawPreview!=null
         BackHandler(!showPlayer&&page !in listOf("library","lists","settings")){if(page=="browser"&&folder.isNotEmpty()&&folder!=dav?.root)browse(java.net.URI(folder).resolve("../").toString())else page="settings"}
         BackHandler(showPlayer){showPlayer=false}
@@ -181,7 +179,7 @@ class MainActivity:ComponentActivity(){
                             addCurrent&&song!=null->PlaylistChoices("加入歌单",song!!,playlists,playlists.filter{song!!.url in it.songs}.map{it.id}.toSet(),{addCurrent=false}){choices->val url=song!!.url;playlists=playlists.map{it.copy(songs=if(it.id in choices)(it.songs+url).distinct()else it.songs-url)};library.saveLists(playlists);addCurrent=false;message="已保存歌单选择"}
                             settings->LyricSettingsScreen(size,{size=it;preferences.edit().putFloat("size",it).apply()},blurred,{blurred=it;preferences.edit().putBoolean("blurred",it).apply()},softArtwork,{settings=false})
                             showQueue->QueueScreen(queue,song,playing,playMode,{showQueue=false},{start(it)},{toggle()})
-                            showPlayer&&song!=null->PlayerScreen(song!!,artist,album,artwork,lines,lyricMode,size,clock,playing,buffering,playbackError,playMode,{showPlayer=false},{lyricMode=!lyricMode;preferences.edit().putBoolean("lyricMode",lyricMode).apply()},{settings=true},{addCurrent=true},{probe?.userSeek=true;player?.seekTo(it)},{toggle()},{step(-1)},{step(1)},{playMode=(playMode+1)%3;preferences.edit().putInt("playMode",playMode).apply();player?.repeatMode=if(playMode==2)Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF},{showQueue=true},{song?.let{start(it)}})
+                            showPlayer&&song!=null->PlayerScreen(song!!,artist,album,artwork,lines,lyricMode,size,clock,playing,buffering,playbackError,playMode,{showPlayer=false},{lyricMode=!lyricMode;preferences.edit().putBoolean("lyricMode",lyricMode).apply()},{settings=true},{addCurrent=true},{probe?.userSeek=true;player?.seekTo(it)},{toggle()},{step(-1)},{step(1)},{playMode=(playMode+1)%3;preferences.edit().putInt("playMode",playMode).apply();PlaybackEngine.mode(playMode)},{showQueue=true},{song?.let{start(it)}})
                             page=="qq"->QqMusicScreen({page="library"},{player?.pause()},{qqBackdrop=it})
                             page=="webdav"->Column(Modifier.fillMaxSize()){
                                 PageHeader("WebDav 连接",{page="settings"})
@@ -190,7 +188,7 @@ class MainActivity:ComponentActivity(){
                                     Text("用户名",fontSize=12.sp,color=palette.accent);OutlinedTextField(user,{user=it},singleLine=true,shape=RoundedCornerShape(12.dp),colors=fieldColors(),modifier=Modifier.fillMaxWidth().padding(top=8.dp,bottom=14.dp))
                                     Text("应用专用密码",fontSize=12.sp,color=palette.accent);OutlinedTextField(password,{password=it},singleLine=true,visualTransformation=PasswordVisualTransformation(),shape=RoundedCornerShape(12.dp),colors=fieldColors(),modifier=Modifier.fillMaxWidth().padding(top=8.dp,bottom=6.dp))
                                     Row(Modifier.fillMaxWidth().clickable{rememberConnection=!rememberConnection},verticalAlignment=Alignment.CenterVertically){Checkbox(rememberConnection,{rememberConnection=it});Text("记住连接（仅在本机加密保存）",fontSize=12.sp)}
-                                    if(dav!=null)TextButton({connectionStore.clear();dav=null;password="";player?.pause();message="已断开连接"}){Text("断开并忘记连接")}
+                                    if(dav!=null)TextButton({connectionStore.clear();dav=null;PlaybackEngine.connection=null;password="";player?.pause();message="已断开连接"}){Text("断开并忘记连接")}
                                 }
                                 SoftButton({connect()},Modifier.fillMaxWidth().padding(top=12.dp,bottom=18.dp),!busy){Text(if(busy)"正在连接…"else"测试并保存连接")}
                             }
