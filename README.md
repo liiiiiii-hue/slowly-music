@@ -16,7 +16,9 @@
 
 ## 安装与使用
 
-需要自行构建 APK，或使用仓库 Releases 中实际发布的安装包。首次安装需允许对应来源安装应用。
+直接下载：[SlowlyMusic-0.5.0.apk](https://github.com/liiiiiii-hue/slowly-music/releases/download/v0.5.0/SlowlyMusic-0.5.0.apk)（约 13.5 MiB，可直接安装）。
+
+[发布说明与 SHA-256 校验文件](https://github.com/liiiiiii-hue/slowly-music/releases/tag/v0.5.0)。安装包沿用此前个人测试版签名，可覆盖安装；首次安装需允许对应来源安装应用。也可按下方步骤自行构建。
 
 完整步骤见 [使用说明书](docs/USER_GUIDE.md)，构建步骤见 [开发与架构](docs/DEVELOPMENT.md)。
 
